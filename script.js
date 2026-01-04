@@ -6,9 +6,11 @@ const AudioContextClass = window.AudioContext || window.webkitAudioContext;
 const state = {
   bpm: 100,
   beatsPerMeasure: 4,
+  subdivision: 1,
   gainLevel: 0.75,
   isPlaying: false,
   currentBeat: 0,
+  currentSubdivision: 0,
   nextNoteTime: 0,
   lookahead: 25,
   scheduleAheadTime: 0.1,
@@ -22,6 +24,7 @@ const tempoSlider = document.querySelector('#tempo-slider');
 const tempoInput = document.querySelector('#tempo-input');
 const beatIndicators = document.querySelector('#beat-indicators');
 const beatsSelect = document.querySelector('#beats-select');
+const subdivisionSelect = document.querySelector('#subdivision-select');
 const startStop = document.querySelector('#start-stop');
 const tapTempo = document.querySelector('#tap-tempo');
 const volume = document.querySelector('#volume');
@@ -39,6 +42,8 @@ function loadSettings() {
     if (typeof saved.bpm === 'number') state.bpm = clampTempo(saved.bpm);
     if (typeof saved.beatsPerMeasure === 'number')
       state.beatsPerMeasure = saved.beatsPerMeasure;
+    if (typeof saved.subdivision === 'number')
+      state.subdivision = saved.subdivision;
     if (typeof saved.gainLevel === 'number') state.gainLevel = saved.gainLevel;
   } catch (error) {
     console.error('Unable to load saved settings', error);
@@ -52,6 +57,7 @@ function persistSettings() {
       JSON.stringify({
         bpm: state.bpm,
         beatsPerMeasure: state.beatsPerMeasure,
+        subdivision: state.subdivision,
         gainLevel: state.gainLevel,
       })
     );
@@ -71,6 +77,12 @@ function updateTempo(newBpm) {
 function updateBeatsPerMeasure(value) {
   state.beatsPerMeasure = value;
   renderBeats();
+  persistSettings();
+}
+
+function updateSubdivision(value) {
+  state.subdivision = value;
+  state.currentSubdivision = 0;
   persistSettings();
 }
 
@@ -111,15 +123,26 @@ function createAudioContext() {
   return state.audioCtx;
 }
 
-function scheduleClick(beatNumber, time) {
+function scheduleClick(beatNumber, time, type = 'beat') {
   const ctx = createAudioContext();
   if (!ctx) return;
   const oscillator = ctx.createOscillator();
   const gain = ctx.createGain();
 
-  const accented = beatNumber === 1;
-  const frequency = accented ? 1280 : 940;
-  const baseGain = Math.max(0.0001, state.gainLevel * (accented ? 0.9 : 0.7));
+  let frequency = 940;
+  let gainMultiplier = 0.7;
+
+  if (type === 'beat') {
+    if (beatNumber === 1) {
+      frequency = 1280;
+      gainMultiplier = 0.9;
+    }
+  } else if (type === 'subdivision') {
+    frequency = 800;
+    gainMultiplier = 0.2;
+  }
+
+  const baseGain = Math.max(0.0001, state.gainLevel * gainMultiplier);
 
   gain.gain.setValueAtTime(0.0001, time);
   gain.gain.exponentialRampToValueAtTime(baseGain, time + 0.001);
@@ -131,20 +154,34 @@ function scheduleClick(beatNumber, time) {
   oscillator.start(time);
   oscillator.stop(time + 0.12);
 
-  const msUntilBeat = Math.max(0, (time - ctx.currentTime) * 1000);
-  setTimeout(() => highlightBeat(beatNumber), msUntilBeat);
+  if (type === 'beat') {
+    const msUntilBeat = Math.max(0, (time - ctx.currentTime) * 1000);
+    setTimeout(() => highlightBeat(beatNumber), msUntilBeat);
+  }
 }
 
 function scheduler() {
   if (!state.audioCtx) return;
+  const secondsPerBeat = 60.0 / state.bpm;
+  const secondsPerSubdivision = secondsPerBeat / state.subdivision;
+
   while (
     state.nextNoteTime <
     state.audioCtx.currentTime + state.scheduleAheadTime
   ) {
-    state.currentBeat = (state.currentBeat % state.beatsPerMeasure) + 1;
-    scheduleClick(state.currentBeat, state.nextNoteTime);
-    const secondsPerBeat = 60.0 / state.bpm;
-    state.nextNoteTime += secondsPerBeat;
+    if (state.currentSubdivision === 0) {
+      state.currentBeat = (state.currentBeat % state.beatsPerMeasure) + 1;
+      scheduleClick(state.currentBeat, state.nextNoteTime, 'beat');
+    } else {
+      scheduleClick(state.currentBeat, state.nextNoteTime, 'subdivision');
+    }
+
+    state.currentSubdivision++;
+    if (state.currentSubdivision >= state.subdivision) {
+      state.currentSubdivision = 0;
+    }
+
+    state.nextNoteTime += secondsPerSubdivision;
   }
 }
 
@@ -158,6 +195,7 @@ async function startMetronome() {
 
   state.isPlaying = true;
   state.currentBeat = 0;
+  state.currentSubdivision = 0;
   state.nextNoteTime = ctx.currentTime + 0.05;
   startStop.textContent = 'Stop';
   startStop.classList.add('primary');
@@ -223,6 +261,10 @@ function bindEvents() {
     updateBeatsPerMeasure(Number(event.target.value));
   });
 
+  subdivisionSelect.addEventListener('change', (event) => {
+    updateSubdivision(Number(event.target.value));
+  });
+
   volume.addEventListener('input', (event) => {
     updateVolume(Number(event.target.value));
   });
@@ -255,6 +297,7 @@ function init() {
   loadSettings();
   updateTempo(state.bpm);
   beatsSelect.value = String(state.beatsPerMeasure);
+  subdivisionSelect.value = String(state.subdivision);
   volume.value = state.gainLevel.toString();
   renderBeats();
   bindEvents();
@@ -262,3 +305,15 @@ function init() {
 }
 
 init();
+
+export {
+  state,
+  updateTempo,
+  updateBeatsPerMeasure,
+  updateSubdivision,
+  scheduler,
+  scheduleClick,
+  startMetronome,
+  stopMetronome,
+  clampTempo
+};
